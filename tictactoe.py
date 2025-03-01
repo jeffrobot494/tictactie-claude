@@ -1,9 +1,33 @@
 import streamlit as st
+# Set page config must be the first Streamlit command
+st.set_page_config(
+    page_title="Tic Tac Toe vs Claude",
+    page_icon="🎮",
+    layout="centered"
+)
+
+import streamlit.components.v1 as components
 import random
 import time
 import os
+import base64
 from dotenv import load_dotenv
 import anthropic
+
+# Set up cell click handling with a component
+if 'clicked_cell' not in st.session_state:
+    st.session_state.clicked_cell = None
+
+# Check URL parameters
+params = st.query_params
+if 'cell' in params:
+    try:
+        # Store the cell click in session state
+        st.session_state.clicked_cell = int(params['cell'])
+        # Clear URL parameters
+        params.clear()
+    except (ValueError, KeyError, IndexError):
+        pass
 
 # Try to load environment variables
 try:
@@ -14,16 +38,11 @@ except ImportError:
 # Initialize Anthropic client
 api_key = os.getenv("ANTHROPIC_API_KEY")
 
-# Set page config
-st.set_page_config(
-    page_title="Tic Tac Toe vs Claude",
-    page_icon="🎮",
-    layout="centered"
-)
-
 # Set up session state
+if 'board_size' not in st.session_state:
+    st.session_state.board_size = 3
 if 'board' not in st.session_state:
-    st.session_state.board = [" " for _ in range(9)]
+    st.session_state.board = [" " for _ in range(st.session_state.board_size**2)]
 if 'current_player' not in st.session_state:
     st.session_state.current_player = random.choice(['X', 'O'])
 if 'human_marker' not in st.session_state:
@@ -62,61 +81,86 @@ client = anthropic.Anthropic(api_key=api_key)
 
 # Functions for the game
 def check_winner(board):
+    size = int(st.session_state.board_size)
+    win_length = 3  # Fixed win length of 3
+    
     # Check rows
-    for i in range(0, 9, 3):
-        if board[i] == board[i+1] == board[i+2] != " ":
-            return board[i]
+    for row_start in range(0, size*size, size):
+        for col_start in range(size - win_length + 1):
+            segment = board[row_start + col_start:row_start + col_start + win_length]
+            if segment.count(segment[0]) == win_length and segment[0] != " ":
+                return segment[0]
+    
     # Check columns
-    for i in range(3):
-        if board[i] == board[i+3] == board[i+6] != " ":
-            return board[i]
-    # Check diagonals
-    if board[0] == board[4] == board[8] != " ":
-        return board[0]
-    if board[2] == board[4] == board[6] != " ":
-        return board[2]
+    for col in range(size):
+        for row_start in range(size - win_length + 1):
+            segment = [board[(row_start + i) * size + col] for i in range(win_length)]
+            if segment.count(segment[0]) == win_length and segment[0] != " ":
+                return segment[0]
+    
+    # Check diagonals (top-left to bottom-right)
+    for row_start in range(size - win_length + 1):
+        for col_start in range(size - win_length + 1):
+            segment = [board[(row_start + i) * size + (col_start + i)] for i in range(win_length)]
+            if segment.count(segment[0]) == win_length and segment[0] != " ":
+                return segment[0]
+    
+    # Check diagonals (top-right to bottom-left)
+    for row_start in range(size - win_length + 1):
+        for col_start in range(win_length - 1, size):
+            segment = [board[(row_start + i) * size + (col_start - i)] for i in range(win_length)]
+            if segment.count(segment[0]) == win_length and segment[0] != " ":
+                return segment[0]
+    
     # Check for tie
     if " " not in board:
         return "Tie"
+    
     return None
 
 def get_ai_move(board, ai_marker, human_marker):
+    size = st.session_state.board_size
     # Format the board state for Claude
-    board_str = f"""
-    {board[0]}|{board[1]}|{board[2]}
-    -+-+-
-    {board[3]}|{board[4]}|{board[5]}
-    -+-+-
-    {board[6]}|{board[7]}|{board[8]}
-    """
+    board_str = ""
+    separator = "-" + "-+-".join(["-" for _ in range(size-1)]) + "-"
+    
+    for i in range(size):
+        row = "|".join(board[i*size:(i+1)*size])
+        board_str += f"    {row}\n"
+        if i < size - 1:
+            board_str += f"    {separator}\n"
+    
+    # Generate the position numbers display
+    position_display = ""
+    for i in range(size):
+        row_positions = "|".join([str(i*size+j) for j in range(size)])
+        position_display += f"{row_positions}\n"
+        if i < size - 1:
+            position_display += f"{separator.strip()}\n"
     
     prompt = f"""
-    We're playing Tic Tac Toe. YOU are playing as '{ai_marker}' and I (the human) am playing as '{human_marker}'.
+    We're playing Tic Tac Toe on a {size}x{size} board. YOU are playing as '{ai_marker}' and I (the human) am playing as '{human_marker}'.
     
     IMPORTANT: To be absolutely clear:
     - All '{ai_marker}' marks on the board are YOUR marks
     - All '{human_marker}' marks on the board are MY marks (the human player)
-    - You can only win by getting three '{ai_marker}' marks in a row
-    - I can only win by getting three '{human_marker}' marks in a row
+    - You can only win by getting 3 '{ai_marker}' marks in a row (not {size})
+    - I can only win by getting 3 '{human_marker}' marks in a row (not {size})
     - You cannot use my '{human_marker}' marks to form your winning line
     
     CRITICAL: Take your time to carefully read and understand the current board state. 
     Look at EACH position to identify ALL '{human_marker}' and '{ai_marker}' markers.
-    Check for potential winning lines in ALL directions (rows, columns, and diagonals).
+    Check for potential winning lines of 3 in ALL directions (rows, columns, and diagonals).
     
     The current board state is:
     
-    {board_str}
+{board_str}
     
     It's your turn. Make your move by placing another '{ai_marker}' mark on the board.
-    Choose the index number (0-8) of an empty position.
+    Choose the index number (0-{size*size-1}) of an empty position.
     
     The board positions are numbered as follows:
-    0|1|2
-    -+-+-
-    3|4|5
-    -+-+-
-    6|7|8
+{position_display}
     
     Please explain your reasoning in 1-2 sentences, then provide your move.
     Format your response like this:
@@ -125,7 +169,7 @@ def get_ai_move(board, ai_marker, human_marker):
     
     X
     
-    Where X is a single number 0-8 representing an empty position on the board.
+    Where X is a single number 0-{size*size-1} representing an empty position on the board.
     """
     
     try:
@@ -133,22 +177,17 @@ def get_ai_move(board, ai_marker, human_marker):
             model="claude-3-7-sonnet-20250219",
             max_tokens=300,
             temperature=0.2,
-            system="""You are playing Tic Tac Toe against a human player.
+            system=f"""You are playing Tic Tac Toe against a human player.
 
 IMPORTANT - YOU MUST REMEMBER WHICH MARKER IS YOURS:
 - If you're playing as X: All X marks on the board are YOUR marks, all O marks are the HUMAN's
 - If you're playing as O: All O marks on the board are YOUR marks, all X marks are the HUMAN's
-- You can only win by getting three of YOUR OWN markers in a row
-- You CANNOT win by getting three of the HUMAN's markers in a row
+- You can only win by getting 3 of YOUR OWN markers in a row (regardless of board size)
+- You CANNOT win by getting 3 of the HUMAN's markers in a row
 - Always pay careful attention to which marker is yours in the current game
 
 The rules of Tic Tac Toe are:
-1. The board is a 3x3 grid numbered 0-8 as follows:
-   0|1|2
-   -+-+-
-   3|4|5
-   -+-+-
-   6|7|8
+1. The board is a {size}x{size} grid numbered 0-{size*size-1}
 2. X always goes first, O always goes second
 3. Players take turns placing their marker on an empty space
 4. The first player to get 3 of their OWN markers in a row (horizontal, vertical, or diagonal) wins
@@ -158,10 +197,12 @@ CAREFUL ANALYSIS IS REQUIRED:
 - Take time to visualize the entire board layout
 - Check EVERY position on the board for both your markers and the human's markers
 - Scan ALL rows, columns, and both diagonals for potential winning lines or threats
+- Look for any sequences of 2 markers that can be extended to 3
 - Double-check your understanding before making your move
+- Check if the board size has changed since your last move
 - Being careful is more important than being quick
 
-Respond with a reasoning explanation followed by a single number 0-8 representing your move position.""",
+Respond with a reasoning explanation followed by a single number 0-{size*size-1} representing your move position.""",
             messages=[
                 {"role": "user", "content": prompt}
             ]
@@ -191,22 +232,33 @@ Respond with a reasoning explanation followed by a single number 0-8 representin
                     print(f"Extracted reasoning (alternative method): {reasoning}")
         
         # Try to parse the response to get just a number
+        max_position = size*size - 1
+        
+        # First try to extract a possibly multi-digit number
+        import re
+        numbers = re.findall(r'\d+', full_response)
+        for num_str in numbers:
+            num = int(num_str)
+            if 0 <= num <= max_position and board[num] == " ":
+                return num
+        
+        # If that didn't work, try digit by digit
         for char in full_response:
-            if char.isdigit() and 0 <= int(char) <= 8:
+            if char.isdigit() and 0 <= int(char) <= max_position:
                 move = int(char)
                 # Verify it's a valid move
-                if 0 <= move <= 8 and board[move] == " ":
+                if board[move] == " ":
                     return move
         
         # If we couldn't parse a valid move, find the first empty space
-        for i in range(9):
+        for i in range(size*size):
             if board[i] == " ":
                 return i
                 
     except Exception as e:
         st.error(f"Error getting AI move: {e}")
         # Fallback: find first empty space
-        for i in range(9):
+        for i in range(size*size):
             if board[i] == " ":
                 return i
     
@@ -233,7 +285,9 @@ def make_move(index):
             st.session_state.current_player = 'O' if st.session_state.current_player == 'X' else 'X'
 
 def reset_game():
-    st.session_state.board = [" " for _ in range(9)]
+    # Reset the board with the current board size
+    size = st.session_state.board_size
+    st.session_state.board = [" " for _ in range(size*size)]
     st.session_state.current_player = random.choice(['X', 'O'])
     st.session_state.game_over = False
     st.session_state.winner = None
@@ -242,8 +296,38 @@ def reset_game():
     st.session_state.ai_reasoning = ""
     # Note: ai_move_history is cleared in the Play Again button click handler
 
+# Process click from URL if needed    
+if st.session_state.clicked_cell is not None:
+    cell_index = st.session_state.clicked_cell
+    st.session_state.clicked_cell = None
+    # Make the move if valid
+    if (not st.session_state.game_over and 
+        0 <= cell_index < len(st.session_state.board) and 
+        st.session_state.board[cell_index] == " " and
+        st.session_state.current_player == st.session_state.human_marker):
+        make_move(cell_index)
+
 # UI elements
-col1, col2 = st.columns([2, 1])
+# Adjust the column width based on board size to maintain square aspect ratio
+if 'board_size' in st.session_state:
+    if st.session_state.board_size >= 7:
+        col1, col2 = st.columns([5, 1])
+    elif st.session_state.board_size >= 5:
+        col1, col2 = st.columns([4, 1])
+    else:
+        col1, col2 = st.columns([3, 1])
+else:
+    col1, col2 = st.columns([3, 1])
+
+# Function to generate the game board HTML
+# Function to handle cell clicks
+def handle_cell_click(cell_index):
+    if (not st.session_state.game_over and 
+        0 <= cell_index < len(st.session_state.board) and 
+        st.session_state.board[cell_index] == " " and
+        st.session_state.current_player == st.session_state.human_marker):
+        make_move(cell_index)
+        st.rerun()
 
 with col1:
     st.header(f"Game #{st.session_state.game_count}")
@@ -254,105 +338,173 @@ with col1:
     else:
         st.info(f"Claude goes first! You are '{st.session_state.human_marker}'")
     
-    # Display the current board state with a simple, reliable approach
+    # Display the current board state
     st.subheader("Game Board")
     
-    # Create three rows of three cells each
-    for row in range(3):
-        # Create a row with equal columns
-        cols = st.columns(3)
-        
-        for col in range(3):
-            index = row * 3 + col
-            value = st.session_state.board[index]
-            
+    # Add CSS for styling the buttons to match cells
+    st.markdown("""
+    <style>
+    .stButton>button {
+        background-color: #f5f5f5 !important;
+        border: 2px solid #cccccc !important;
+        border-radius: 4px !important;
+        width: 50px !important;
+        height: 50px !important;
+        display: flex !important;
+        justify-content: center !important;
+        align-items: center !important;
+        padding: 0 !important;
+        font-size: 24px !important;
+        font-weight: bold !important;
+        margin: 2px auto !important;
+        color: transparent !important;
+    }
+    
+    .stButton>button:hover {
+        background-color: #e5e5e5 !important;
+        border-color: #999999 !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    # Create a grid layout for the board
+    size = st.session_state.board_size
+    board = st.session_state.board
+    is_player_turn = st.session_state.current_player == st.session_state.human_marker and not st.session_state.game_over
+    
+    # Create a grid layout for direct button clicks
+    # Use Streamlit's built-in grid
+    size = st.session_state.board_size
+    
+    # Add CSS to make the buttons appear as cells
+    st.markdown("""
+    <style>
+    .stButton button {
+        width: 60px !important;
+        height: 60px !important;
+        padding: 0 !important;
+        display: flex !important;
+        justify-content: center !important;
+        align-items: center !important;
+        font-size: 24px !important;
+        font-weight: bold !important;
+        border-radius: 4px !important;
+    }
+    
+    .stButton button:focus {
+        box-shadow: none !important;
+    }
+    
+    /* Make containers more compact */
+    .element-container {
+        margin-bottom: 0 !important;
+        padding-bottom: 0 !important;
+    }
+    
+    div[data-testid="column"] > div {
+        padding: 0 2px !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    # Display the board as a grid of buttons
+    for row in range(size):
+        cols = st.columns(size)
+        for col in range(size):
+            index = row * size + col
             with cols[col]:
-                # Create a consistent-sized cell with fixed height
-                cell_container = st.container()
+                marker = st.session_state.board[index]
                 
-                # Add spacing above for consistent height
-                st.markdown("<div style='height: 10px'></div>", unsafe_allow_html=True)
-                
-                # Style based on cell content
-                if value == "X":
-                    # Blue X
+                if marker == "X":
+                    # X cell
                     st.markdown(
-                        "<div style='background-color:#e6f3ff; border:2px solid #0066cc; "
-                        "height:80px; display:flex; justify-content:center; align-items:center; "
-                        "font-size:40px; font-weight:bold; color:blue;'>X</div>",
+                        f"""
+                        <div style="
+                            background-color: #e6f3ff;
+                            border: 2px solid #0066cc;
+                            color: blue;
+                            border-radius: 4px;
+                            width: 60px;
+                            height: 60px;
+                            display: flex;
+                            justify-content: center;
+                            align-items: center;
+                            font-size: 24px;
+                            font-weight: bold;
+                            margin: 0 auto;
+                        ">X</div>
+                        """, 
                         unsafe_allow_html=True
                     )
-                elif value == "O":
-                    # Red O
+                elif marker == "O":
+                    # O cell
                     st.markdown(
-                        "<div style='background-color:#fff0f0; border:2px solid #cc0000; "
-                        "height:80px; display:flex; justify-content:center; align-items:center; "
-                        "font-size:40px; font-weight:bold; color:red;'>O</div>",
+                        f"""
+                        <div style="
+                            background-color: #fff0f0;
+                            border: 2px solid #cc0000;
+                            color: red;
+                            border-radius: 4px;
+                            width: 60px;
+                            height: 60px;
+                            display: flex;
+                            justify-content: center;
+                            align-items: center;
+                            font-size: 24px;
+                            font-weight: bold;
+                            margin: 0 auto;
+                        ">O</div>
+                        """, 
                         unsafe_allow_html=True
                     )
+                elif st.session_state.current_player == st.session_state.human_marker and not st.session_state.game_over:
+                    # Empty cell that can be clicked
+                    if st.button("", key=f"cell_{index}"):
+                        # Handle the click directly
+                        make_move(index)
+                        st.rerun()
                 else:
-                    # For empty cells, we'll use a very simple approach
-                    is_clickable = not st.session_state.game_over and st.session_state.current_player == st.session_state.human_marker
-                    
-                    if is_clickable:
-                        # Use a regular button that looks like an empty cell
-                        button_style = """
-                        <style>
-                        div[data-testid="stButton"] > button {
+                    # Empty cell that can't be clicked
+                    st.markdown(
+                        f"""
+                        <div style="
                             background-color: #f5f5f5;
                             border: 2px solid #cccccc;
                             border-radius: 4px;
-                            color: transparent;
-                            height: 80px;
-                            width: 100%;
+                            width: 60px;
+                            height: 60px;
                             display: flex;
-                            align-items: center;
                             justify-content: center;
-                        }
-                        div[data-testid="stButton"] > button:hover {
-                            background-color: #e5e5e5;
-                            border-color: #999999;
-                        }
-                        </style>
-                        """
-                        st.markdown(button_style, unsafe_allow_html=True)
-                        
-                        # Create a plain button styled to look like an empty cell
-                        if st.button(" ", key=f"cell_{index}"):
-                            make_move(index)
-                            st.rerun()
-                    else:
-                        # Display a non-clickable empty cell
-                        empty_cell_html = "<div style='background-color:#f5f5f5; border:2px solid #cccccc; " \
-                                        "height:80px; display:flex; justify-content:center; " \
-                                        "align-items:center; border-radius: 4px;'></div>"
-                        st.markdown(empty_cell_html, unsafe_allow_html=True)
-                
-                # Add spacing below for consistent height
-                st.markdown("<div style='height: 10px'></div>", unsafe_allow_html=True)
+                            align-items: center;
+                            margin: 0 auto;
+                        "></div>
+                        """, 
+                        unsafe_allow_html=True
+                    )
     
-    # Game status message and Play Again button (directly below the board)
+    # Process clicks from URL parameters if any
+    if st.session_state.clicked_cell is not None:
+        cell_index = st.session_state.clicked_cell
+        st.session_state.clicked_cell = None
+        handle_cell_click(cell_index)
+    
+    # Game status message and Play Again button
     if st.session_state.game_over:
-        status_container = st.container()
-        with status_container:
-            if st.session_state.winner == "Tie":
-                st.success("Game ended in a tie!")
-            elif st.session_state.winner == st.session_state.human_marker:
-                st.success("🎉 You won! 🎉")
-            else:
-                st.warning("Claude won this round!")
-            
-            # Play again button
-            if st.button("Play Again"):
-                reset_game()
-                # Clear Claude's thought history when starting a new game
-                st.session_state.ai_move_history = []
-                st.rerun()
-    else:
-        # Add some space when game is active
-        st.markdown("<div style='height: 20px'></div>", unsafe_allow_html=True)
+        if st.session_state.winner == "Tie":
+            st.success("Game ended in a tie!")
+        elif st.session_state.winner == st.session_state.human_marker:
+            st.success("🎉 You won! 🎉")
+        else:
+            st.warning("Claude won this round!")
+        
+        # Play again button
+        if st.button("Play Again"):
+            reset_game()
+            # Clear Claude's thought history when starting a new game
+            st.session_state.ai_move_history = []
+            st.rerun()
     
-    # Handle AI's turn (do this below the game status for state management)
+    # Handle AI's turn
     if not st.session_state.game_over and st.session_state.current_player == st.session_state.ai_marker:
         with st.spinner("Claude is thinking..."):
             time.sleep(1)  # Add a small delay to make it feel more natural
@@ -364,13 +516,11 @@ with col1:
                     'move': ai_move,
                     'reasoning': reasoning
                 })
-                # Debug info
-                print(f"Added AI move {ai_move} with reasoning: {reasoning}")
                 
                 st.toast(f"Claude plays position {ai_move}")
                 make_move(ai_move)
                 st.rerun()
-        
+    
     # Add a chat-like display for Claude's reasoning
     ai_chat = st.container()
     with ai_chat:
@@ -399,14 +549,8 @@ with col1:
         </style>
         """, unsafe_allow_html=True)
         
-        # Create a container for the chat messages with the custom class
-        chat_container = st.container()
-        
-        # Add a container with the custom CSS class
+        # Add container with the custom CSS class
         st.markdown('<div class="ai-chat-container">', unsafe_allow_html=True)
-        
-        # Debugging info about history
-        print(f"AI move history: {st.session_state.ai_move_history}")
         
         # Add reasoning history as separate markdown elements with newest first
         if st.session_state.ai_move_history and len(st.session_state.ai_move_history) > 0:
@@ -439,6 +583,38 @@ with col2:
     # Game options
     st.subheader("Options")
     
+    # Board size slider
+    new_board_size = st.number_input(
+        "Board Size:", 
+        min_value=3, 
+        max_value=8, 
+        value=int(st.session_state.board_size),
+        step=1,
+        help="Choose the size of the board (e.g., 3 for a 3x3 board, 4 for a 4x4 board)"
+    )
+    
+    # Check if board size has changed
+    if new_board_size != st.session_state.board_size:
+        # Update the board size
+        st.session_state.board_size = new_board_size
+        
+        # Resize the board to match the new size while preserving existing moves
+        old_board = st.session_state.board.copy()
+        old_size = int(len(old_board) ** 0.5)  # Calculate old size from board length
+        new_board = [" " for _ in range(new_board_size * new_board_size)]
+        
+        # Copy values from old board to new board where possible
+        min_size = min(old_size, new_board_size)
+        for row in range(min_size):
+            for col in range(min_size):
+                old_index = row * old_size + col
+                new_index = row * new_board_size + col
+                if old_index < len(old_board) and new_index < len(new_board):
+                    new_board[new_index] = old_board[old_index]
+        
+        st.session_state.board = new_board
+        st.rerun()
+    
     # Let user choose their marker for the next game
     new_marker = st.radio("Choose your marker for next game:", options=["X", "O"], index=0 if st.session_state.human_marker == "X" else 1)
     if new_marker != st.session_state.human_marker:
@@ -457,21 +633,13 @@ with col2:
     
     # Game instructions
     with st.expander("How to Play"):
-        st.markdown("""
+        st.markdown(f"""
         1. You are playing against Claude, an AI.
-        2. X always goes first, O goes second.
+        2. X always goes first, O always goes second.
         3. Click on an empty space to place your marker.
         4. The first player to get 3 in a row (horizontally, vertically, or diagonally) wins.
         5. If all spaces are filled and no one has 3 in a row, the game is a tie.
-        
-        The game board positions are numbered as follows:
-        ```
-        0 | 1 | 2
-        ---------
-        3 | 4 | 5
-        ---------
-        6 | 7 | 8
-        ```
+        6. You can change the board size using the input above - from 3x3 up to 8x8!
         
         Claude has been programmed to play an optimal strategy, so it will be challenging to win!
         """)
