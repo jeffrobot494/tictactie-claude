@@ -131,7 +131,7 @@ def get_ai_move(board, ai_marker, human_marker):
     try:
         response = client.messages.create(
             model="claude-3-7-sonnet-20250219",
-            max_tokens=100,
+            max_tokens=300,
             temperature=0.2,
             system="""You are playing Tic Tac Toe against a human player.
 
@@ -169,12 +169,26 @@ Respond with a reasoning explanation followed by a single number 0-8 representin
         
         # Extract the full response
         full_response = response.content[0].text.strip()
+        print(f"Full Claude response: {full_response}")
         
         # Store the AI's reasoning in session state
         reasoning = ""
         if "[reasoning]" in full_response and "[/reasoning]" in full_response:
             reasoning = full_response.split("[reasoning]")[1].split("[/reasoning]")[0].strip()
             st.session_state.ai_reasoning = reasoning
+            print(f"Extracted reasoning: {reasoning}")
+        else:
+            # Try a more flexible approach to extract reasoning
+            # Look for any text before a single number (the move)
+            import re
+            match = re.search(r"(.*?)(\d+)\s*$", full_response, re.DOTALL)
+            if match:
+                possible_reasoning = match.group(1).strip()
+                # Only use if it's a reasonable length
+                if len(possible_reasoning) > 5:
+                    reasoning = possible_reasoning
+                    st.session_state.ai_reasoning = reasoning
+                    print(f"Extracted reasoning (alternative method): {reasoning}")
         
         # Try to parse the response to get just a number
         for char in full_response:
@@ -345,11 +359,13 @@ with col1:
             ai_move = get_ai_move(st.session_state.board, st.session_state.ai_marker, st.session_state.human_marker)
             if ai_move is not None:
                 # Add the move and reasoning to history
-                if hasattr(st.session_state, 'ai_reasoning'):
-                    st.session_state.ai_move_history.append({
-                        'move': ai_move,
-                        'reasoning': st.session_state.ai_reasoning
-                    })
+                reasoning = st.session_state.ai_reasoning if st.session_state.ai_reasoning else "No explanation provided"
+                st.session_state.ai_move_history.append({
+                    'move': ai_move,
+                    'reasoning': reasoning
+                })
+                # Debug info
+                print(f"Added AI move {ai_move} with reasoning: {reasoning}")
                 
                 st.toast(f"Claude plays position {ai_move}")
                 make_move(ai_move)
@@ -389,12 +405,17 @@ with col1:
         # Add a container with the custom CSS class
         st.markdown('<div class="ai-chat-container">', unsafe_allow_html=True)
         
+        # Debugging info about history
+        print(f"AI move history: {st.session_state.ai_move_history}")
+        
         # Add reasoning history as separate markdown elements with newest first
-        if st.session_state.ai_move_history:
+        if st.session_state.ai_move_history and len(st.session_state.ai_move_history) > 0:
             # Reverse the order to show newest first
             for move_info in reversed(st.session_state.ai_move_history):
+                move_num = move_info.get('move', '?')
+                reasoning_text = move_info.get('reasoning', 'No explanation provided')
                 st.markdown(
-                    f'<div class="ai-message"><strong>Move {move_info["move"]}</strong>: {move_info["reasoning"]}</div>',
+                    f'<div class="ai-message"><strong>Move {move_num}</strong>: {reasoning_text}</div>',
                     unsafe_allow_html=True
                 )
         else:
